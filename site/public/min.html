@@ -1,0 +1,12 @@
+<!doctype html><html><body style="margin:0;background:#808080">
+<div style="position:absolute;inset:0;background-image:linear-gradient(#000 1px,transparent 1px),linear-gradient(90deg,#000 1px,transparent 1px);background-size:20px 20px"></div>
+<svg style="position:absolute;width:0;height:0" aria-hidden="true">
+ <filter id="f1"><feGaussianBlur stdDeviation="6"/></filter>
+ <filter id="f2" filterUnits="userSpaceOnUse" primitiveUnits="userSpaceOnUse" x="0" y="0" width="300" height="120"><feGaussianBlur stdDeviation="6"/></filter>
+ <filter id="f3" x="0" y="0" width="100%" height="100%" color-interpolation-filters="sRGB"><feTurbulence type="fractalNoise" baseFrequency="0.02" result="n"/><feDisplacementMap in="SourceGraphic" in2="n" scale="80" xChannelSelector="R" yChannelSelector="G"/></filter>
+</svg>
+<div style="position:absolute;left:20px;top:20px;width:300px;height:120px;border-radius:60px;backdrop-filter:url(#f1)"></div>
+<div style="position:absolute;left:360px;top:20px;width:300px;height:120px;border-radius:60px;backdrop-filter:url(#f2)"></div>
+<div style="position:absolute;left:20px;top:180px;width:300px;height:120px;border-radius:60px;backdrop-filter:url(#f3)"></div>
+<div style="position:absolute;left:360px;top:180px;width:300px;height:120px;isolation:isolate"><div style="position:absolute;inset:0;z-index:-3;border-radius:60px;backdrop-filter:url(#f3)"></div></div>
+</body></html>

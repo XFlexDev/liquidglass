@@ -51,6 +51,39 @@ function canvasDataUrl(width: number, height: number, data: Uint8ClampedArray): 
   return canvas.toDataURL('image/png')
 }
 
+function splitCssValues(value: string): string[] {
+  const values: string[] = []
+  let current = ''
+  let depth = 0
+  for (const character of value.trim()) {
+    if (character === '(') depth++
+    if (character === ')') depth--
+    if (/\s/.test(character) && depth === 0) {
+      if (current) values.push(current)
+      current = ''
+    } else current += character
+  }
+  if (current) values.push(current)
+  return values
+}
+
+function scaleValues(value: string): [number, number, number] | null {
+  const values = splitCssValues(value)
+  if (!values.length || values[0] === 'none') return [1, 1, 1]
+  const numbers = values.map(Number)
+  if (numbers.length > 3 || numbers.some((number) => !Number.isFinite(number))) return null
+  return [numbers[0], numbers[1] ?? numbers[0], numbers[2] ?? 1]
+}
+
+function translatedValue(value: string, x: number, y: number): string {
+  const values = splitCssValues(value)
+  const baseX = values[0] && values[0] !== 'none' ? values[0] : '0px'
+  const baseY = values[1] ?? '0px'
+  const baseZ = values[2]
+  const withOffset = (base: string, offset: number): string => offset === 0 ? base : `calc(${base} + ${offset}px)`
+  return [withOffset(baseX, x), withOffset(baseY, y), baseZ].filter(Boolean).join(' ')
+}
+
 function resolveSource(source: GlassOptions['source']): Element | null {
   if (typeof source === 'string') {
     try {
@@ -174,7 +207,8 @@ function initWebGl(): boolean {
       }
       float luminance = dot(color, vec3(0.2126, 0.7152, 0.0722));
       color = mix(vec3(luminance), color, u_saturation) * u_brightness;
-      gl_FragColor = vec4(color, 1.0);
+      float alpha = u_shape_count > 0 ? 1.0 - smoothstep(-0.5, 0.5, sdf((v_uv - 0.5) * u_size)) : 1.0;
+      gl_FragColor = vec4(color, alpha);
     }
   `
   const compile = (kind: number, source: string): WebGLShader | null => {
@@ -323,6 +357,12 @@ function renderSource(
   shapes: SourceShape[] | null = null,
   blend = 0,
 ): boolean {
+  if (shapes && shapes.length === 0) {
+    const dpr = Math.min(2, window.devicePixelRatio || 1)
+    output.width = Math.max(1, Math.round(width * dpr))
+    output.height = Math.max(1, Math.round(height * dpr))
+    return true
+  }
   if (!initWebGl() || !gl || !glCanvas || !glProgram || !glTexture) return false
   const dpr = Math.min(2, window.devicePixelRatio || 1)
   const pixelWidth = Math.max(1, Math.round(width * dpr))
@@ -393,10 +433,18 @@ function renderSource(
   return true
 }
 
-function createRim(canvas: HTMLCanvasElement, width: number, height: number, radius: number, bezel: number, specular: number, lightAngle: number): void {
-  const dpr = Math.min(2, window.devicePixelRatio || 1)
-  canvas.width = Math.max(1, Math.round(width * dpr))
-  canvas.height = Math.max(1, Math.round(height * dpr))
+export function drawSpecularRim(
+  canvas: HTMLCanvasElement,
+  width: number,
+  height: number,
+  distanceAt: (x: number, y: number) => number,
+  bezel: number,
+  specular: number,
+  lightAngle: number,
+): void {
+  const dpr = window.devicePixelRatio || 1
+  canvas.width = Math.max(1, Math.ceil(width * dpr))
+  canvas.height = Math.max(1, Math.ceil(height * dpr))
   canvas.style.width = `${width}px`
   canvas.style.height = `${height}px`
   const context = canvas.getContext('2d')
@@ -405,21 +453,24 @@ function createRim(canvas: HTMLCanvasElement, width: number, height: number, rad
   const light = (lightAngle * Math.PI) / 180
   const lx = Math.cos(light)
   const ly = Math.sin(light)
+  const glowWidth = Math.min(Math.max(1, bezel * 0.25), 12)
   for (let y = 0; y < canvas.height; y++) {
     for (let x = 0; x < canvas.width; x++) {
-      const px = (x + 0.5) / dpr - width / 2
-      const py = (y + 0.5) / dpr - height / 2
-      const distance = roundedRectSdf(px, py, width, height, radius)
-      const inward = -distance
-      if (distance > 0.5 || inward > bezel * 0.6) continue
+      const px = (x + 0.5) / dpr
+      const py = (y + 0.5) / dpr
+      const distance = distanceAt(px, py)
+      const inward = Math.max(0, -distance)
+      if (distance > 0.75 / dpr || inward > glowWidth) continue
       const epsilon = 0.5
-      const gx = (roundedRectSdf(px + epsilon, py, width, height, radius) - roundedRectSdf(px - epsilon, py, width, height, radius)) / 1
-      const gy = (roundedRectSdf(px, py + epsilon, width, height, radius) - roundedRectSdf(px, py - epsilon, width, height, radius)) / 1
+      const gx = (distanceAt(px + epsilon, py) - distanceAt(px - epsilon, py)) / (epsilon * 2)
+      const gy = (distanceAt(px, py + epsilon) - distanceAt(px, py - epsilon)) / (epsilon * 2)
       const norm = Math.hypot(gx, gy) || 1
       const dot = (gx * lx + gy * ly) / norm
-      const spec = Math.pow(Math.max(0, dot), 5) + 0.45 * Math.pow(Math.max(0, -dot), 5)
-      const falloff = Math.exp(-Math.max(0, -inward) / Math.max(1, bezel * 0.12))
-      const alpha = clamp((spec * falloff * specular * 0.8 + (Math.abs(inward) < 1 ? 0.15 : 0)), 0, 0.8)
+      const lit = Math.pow(Math.max(0, dot), 6) * 0.48
+      const opposite = Math.pow(Math.max(0, -dot), 5) * 0.16
+      const edge = clamp((1.5 - inward) * dpr, 0, 1)
+      const glow = inward > 0 ? Math.pow(1 - inward / glowWidth, 2) * 0.035 : 0
+      const alpha = clamp(edge * specular * (0.04 + lit + opposite) + glow, 0, 0.6)
       const idx = (y * canvas.width + x) * 4
       image.data[idx] = 255
       image.data[idx + 1] = 255
@@ -449,6 +500,12 @@ function ringMask(width: number, height: number, radius: number, bezel: number):
 export function createGlass(el: HTMLElement, initial: GlassOptions = {}): GlassController {
   let options: GlassOptions = { ...DEFAULTS, ...initial }
   const originalStyle = el.getAttribute('style')
+  const originalScale = el.style.getPropertyValue('scale')
+  const originalScalePriority = el.style.getPropertyPriority('scale')
+  const originalTranslate = el.style.getPropertyValue('translate')
+  const originalTranslatePriority = el.style.getPropertyPriority('translate')
+  const computedScale = getComputedStyle(el).getPropertyValue('scale') || originalScale || 'none'
+  const computedTranslate = getComputedStyle(el).getPropertyValue('translate') || originalTranslate || 'none'
   const originalEnhanced = el.getAttribute('data-liquidglass-enhanced')
   el.setAttribute('data-liquidglass-enhanced', '')
   const controllerId = `lg-${++uid}`
@@ -466,7 +523,7 @@ export function createGlass(el: HTMLElement, initial: GlassOptions = {}): GlassC
   let rim = document.createElement('canvas')
   rim.dataset.liquidglassRim = ''
   rim.setAttribute('aria-hidden', 'true')
-  rim.style.cssText = 'position:absolute;inset:0;width:100%;height:100%;pointer-events:none;z-index:-1;mix-blend-mode:screen'
+  rim.style.cssText = 'position:absolute;inset:0;width:100%;height:100%;pointer-events:none;z-index:-1'
   let sourceLayer = document.createElement('canvas')
   sourceLayer.dataset.liquidglassSourceLayer = ''
   sourceLayer.style.cssText = 'position:absolute;inset:0;width:100%;height:100%;pointer-events:none;z-index:-3'
@@ -538,7 +595,15 @@ export function createGlass(el: HTMLElement, initial: GlassOptions = {}): GlassC
     tint.style.background = options.tint ?? DEFAULTS.tint
     const shadow = typeof options.shadow === 'string' ? options.shadow : options.shadow ? '0 6px 24px rgba(0,0,0,.18)' : 'none'
     el.style.boxShadow = shadow
-    createRim(rim, width, height, radius, bezel, options.specular ?? 0, options.lightAngle ?? -50)
+    drawSpecularRim(
+      rim,
+      width,
+      height,
+      (x, y) => roundedRectSdf(x - width / 2, y - height / 2, width, height, radius),
+      bezel,
+      options.specular ?? 0,
+      options.lightAngle ?? -50,
+    )
     if (tier === 'refract' || tier === 'element') {
       const map = createDisplacementMap({
         width,
@@ -741,9 +806,37 @@ export function createGlass(el: HTMLElement, initial: GlassOptions = {}): GlassC
     ? interactive
     : { press: Boolean(interactive), stretch: Boolean(interactive), light: Boolean(interactive) }
   let interactiveAttached = false
+  let motionScaleApplied = false
+  let motionTranslateApplied = false
+  const restoreMotionProperty = (property: 'scale' | 'translate'): void => {
+    const originalValue = property === 'scale' ? originalScale : originalTranslate
+    const originalPriority = property === 'scale' ? originalScalePriority : originalTranslatePriority
+    if (originalValue) el.style.setProperty(property, originalValue, originalPriority)
+    else el.style.removeProperty(property)
+  }
   const applyTransform = (): void => {
-    const transform = originalStyle?.match(/(?:^|;)\s*transform\s*:\s*([^;]+)/i)?.[1]?.trim() ?? ''
-    el.style.transform = `${transform} translate3d(${translateX.value}px,${translateY.value}px,0) scale(${scale.value * stretchScaleX.value},${scale.value * stretchScaleY.value})`.trim()
+    const scaleX = (interactiveOptions.press ? scale.value : 1) * (interactiveOptions.stretch ? stretchScaleX.value : 1)
+    const scaleY = (interactiveOptions.press ? scale.value : 1) * (interactiveOptions.stretch ? stretchScaleY.value : 1)
+    if (Math.abs(scaleX - 1) > 0.001 || Math.abs(scaleY - 1) > 0.001) {
+      const baseScale = scaleValues(computedScale)
+      if (baseScale) {
+        el.style.scale = `${baseScale[0] * scaleX} ${baseScale[1] * scaleY} ${baseScale[2]}`
+        motionScaleApplied = true
+      }
+    } else if (motionScaleApplied) {
+      restoreMotionProperty('scale')
+      motionScaleApplied = false
+    }
+
+    const x = interactiveOptions.stretch ? translateX.value : 0
+    const y = interactiveOptions.stretch ? translateY.value : 0
+    if (Math.abs(x) > 0.001 || Math.abs(y) > 0.001) {
+      el.style.translate = translatedValue(computedTranslate, x, y)
+      motionTranslateApplied = true
+    } else if (motionTranslateApplied) {
+      restoreMotionProperty('translate')
+      motionTranslateApplied = false
+    }
   }
   const scheduleMotion = (): void => {
     if (motionFrame || clients.size === 0) return
@@ -791,7 +884,17 @@ export function createGlass(el: HTMLElement, initial: GlassOptions = {}): GlassC
       options = { ...options, lightAngle: angle }
       tint.style.backgroundImage = `radial-gradient(circle at ${lightPoint.x * 100}% ${lightPoint.y * 100}%, rgba(255,255,255,.12), transparent 45%)`
       const radius = Math.min(rect.width, rect.height)
-      createRim(rim, rect.width, rect.height, Number(options.radius === 'auto' ? parseFloat(getComputedStyle(el).borderRadius) || radius / 4 : options.radius), Number(options.bezel === 'auto' ? clamp(radius * 0.3, 8, 48) : options.bezel), options.specular ?? 0, angle)
+      const bezel = Number(options.bezel === 'auto' ? clamp(radius * 0.3, 8, 48) : options.bezel)
+      const rimRadius = Number(options.radius === 'auto' ? parseFloat(getComputedStyle(el).borderRadius) || radius / 4 : options.radius)
+      drawSpecularRim(
+        rim,
+        rect.width,
+        rect.height,
+        (x, y) => roundedRectSdf(x - rect.width / 2, y - rect.height / 2, rect.width, rect.height, rimRadius),
+        bezel,
+        options.specular ?? 0,
+        angle,
+      )
     }
     clients.add(motionClient)
     scheduleMotion()

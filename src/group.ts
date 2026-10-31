@@ -1,6 +1,6 @@
 import type { GlassController, GlassOptions } from './index'
 import { clamp, profileDerivative, profileHeight, roundedRectSdf } from './math'
-import { createGlass, updateGlassDisplacementMap, updateGlassGroupSource } from './render'
+import { createGlass, drawSpecularRim, updateGlassDisplacementMap, updateGlassGroupSource } from './render'
 
 export interface GlassGroupOptions extends GlassOptions {
   blend?: number
@@ -37,7 +37,7 @@ function shapeDistance(x: number, y: number, shapes: Shape[], blend: number): nu
 
 function readShapes(container: HTMLElement, items: Set<HTMLElement>): Shape[] {
   const rect = container.getBoundingClientRect()
-  return [...items].filter((item) => item.isConnected).map((item) => {
+  return [...items].filter((item) => item.isConnected && container.contains(item)).map((item) => {
     const itemRect = item.getBoundingClientRect()
     const radius = Math.max(0, parseFloat(getComputedStyle(item).borderRadius) || 0)
     return {
@@ -50,15 +50,15 @@ function readShapes(container: HTMLElement, items: Set<HTMLElement>): Shape[] {
   })
 }
 
-function maskFor(width: number, height: number, shapes: Shape[], blend: number, resolution: number, margin = 0): string {
-  if (!shapes.length) return 'none'
+function maskFor(width: number, height: number, shapes: Shape[], blend: number, resolution: number, margin = 0, ringWidth?: number): string {
+  if (!shapes.length) return 'linear-gradient(transparent, transparent)'
   const dpr = Math.min(2, window.devicePixelRatio || 1)
   const pixelsPerCss = dpr * resolution
   const canvas = document.createElement('canvas')
   canvas.width = Math.max(1, Math.ceil((width + margin * 2) * pixelsPerCss))
   canvas.height = Math.max(1, Math.ceil((height + margin * 2) * pixelsPerCss))
   const context = canvas.getContext('2d')
-  if (!context) return 'none'
+  if (!context) return 'linear-gradient(transparent, transparent)'
   const image = context.createImageData(canvas.width, canvas.height)
   const antialias = 0.75 / pixelsPerCss
   for (let y = 0; y < canvas.height; y++) {
@@ -66,7 +66,15 @@ function maskFor(width: number, height: number, shapes: Shape[], blend: number, 
       const px = (x + 0.5) / pixelsPerCss - margin
       const py = (y + 0.5) / pixelsPerCss - margin
       const distance = shapeDistance(px, py, shapes, blend)
-      const alpha = Math.round(clamp(0.5 - distance / (antialias * 2), 0, 1) * 255)
+      const alpha = Math.round(clamp(
+        ringWidth === undefined
+          ? 0.5 - distance / (antialias * 2)
+          : distance >= 0
+            ? 1 - distance / antialias
+            : 1 + distance / ringWidth,
+        0,
+        1,
+      ) * 255)
       const idx = (y * canvas.width + x) * 4
       image.data[idx] = 255
       image.data[idx + 1] = 255
@@ -76,6 +84,16 @@ function maskFor(width: number, height: number, shapes: Shape[], blend: number, 
   }
   context.putImageData(image, 0, 0)
   return `url("${canvas.toDataURL('image/png')}")`
+}
+
+function clipPathFor(shapes: Shape[]): string {
+  if (!shapes.length) return 'inset(100%)'
+  const paths = shapes.map(({ x, y, width, height, radius }) => {
+    const r = clamp(radius, 0, Math.min(width, height) / 2)
+    if (r === 0) return `M ${x} ${y} H ${x + width} V ${y + height} H ${x} Z`
+    return `M ${x + r} ${y} H ${x + width - r} A ${r} ${r} 0 0 1 ${x + width} ${y + r} V ${y + height - r} A ${r} ${r} 0 0 1 ${x + width - r} ${y + height} H ${x + r} A ${r} ${r} 0 0 1 ${x} ${y + height - r} V ${y + r} A ${r} ${r} 0 0 1 ${x + r} ${y} Z`
+  }).join(' ')
+  return `path("${paths}")`
 }
 
 function unionDisplacementMap(
@@ -135,51 +153,12 @@ function unionDisplacementMap(
   return { url: canvas.toDataURL('image/png'), margin }
 }
 
-function drawUnionRim(
-  canvas: HTMLCanvasElement,
-  width: number,
-  height: number,
-  shapes: Shape[],
-  blend: number,
-  options: GlassGroupOptions,
-): void {
-  const dpr = Math.min(2, window.devicePixelRatio || 1)
-  canvas.width = Math.max(1, Math.ceil(width * dpr))
-  canvas.height = Math.max(1, Math.ceil(height * dpr))
-  const context = canvas.getContext('2d')
-  if (!context) return
-  const image = context.createImageData(canvas.width, canvas.height)
-  const angle = (options.lightAngle ?? -50) * Math.PI / 180
-  const lx = Math.cos(angle)
-  const ly = Math.sin(angle)
-  const bezel = options.bezel === 'auto' || options.bezel === undefined
-    ? clamp(Math.min(width, height) * 0.3, 8, 48)
-    : clamp(options.bezel, 1, Math.min(width, height) / 2)
-  const specular = options.specular ?? 0.7
-  for (let y = 0; y < canvas.height; y++) for (let x = 0; x < canvas.width; x++) {
-    const px = (x + 0.5) / dpr
-    const py = (y + 0.5) / dpr
-    const distance = shapeDistance(px, py, shapes, blend)
-    const inward = -distance
-    if (distance > 0.5 || inward > bezel * 0.6) continue
-    const gx = shapeDistance(px + 0.5, py, shapes, blend) - shapeDistance(px - 0.5, py, shapes, blend)
-    const gy = shapeDistance(px, py + 0.5, shapes, blend) - shapeDistance(px, py - 0.5, shapes, blend)
-    const norm = Math.hypot(gx, gy) || 1
-    const dot = (gx * lx + gy * ly) / norm
-    const facing = Math.pow(Math.max(0, dot), 5) + 0.45 * Math.pow(Math.max(0, -dot), 5)
-    const falloff = Math.exp(-Math.max(0, -inward) / Math.max(1, bezel * 0.12))
-    const alpha = clamp(facing * falloff * specular * 0.8 + (Math.abs(inward) < 1 ? 0.15 : 0), 0, 0.8)
-    const index = (y * canvas.width + x) * 4
-    image.data[index] = image.data[index + 1] = image.data[index + 2] = 255
-    image.data[index + 3] = Math.round(alpha * 255)
-  }
-  context.putImageData(image, 0, 0)
-}
-
 export function createGlassGroup(container: HTMLElement, initial: GlassGroupOptions = {}): GlassGroupController {
   let options: GlassGroupOptions = { blend: 18, ...initial }
   const items = new Set<HTMLElement>()
-  const controller = createGlass(container, options)
+  const originalGroup = container.getAttribute('data-liquidglass-group')
+  container.dataset.liquidglassGroup = ''
+  const controller = createGlass(container, { ...options, shadow: false })
   let observer: ResizeObserver | null = null
   let mutation: MutationObserver | null = null
   let frame = 0
@@ -200,19 +179,45 @@ export function createGlassGroup(container: HTMLElement, initial: GlassGroupOpti
     const blend = options.blend ?? 18
     const usesDisplacementMap = controller.tier === 'refract' || controller.tier === 'element'
     const margin = usesDisplacementMap ? Math.ceil(Math.max(1, (options.thickness ?? 24) * 0.75)) + 2 : 0
-    const mask = maskFor(rect.width, rect.height, shapes, blend, resolution)
-    const backdropMask = margin ? maskFor(rect.width, rect.height, shapes, blend, resolution, margin) : mask
-    container.querySelectorAll<HTMLElement>('[data-liquidglass-backdrop], [data-liquidglass-edge], [data-liquidglass-tint], [data-liquidglass-rim], [data-liquidglass-source-layer]')
-      .forEach((layer) => {
-        const image = layer.matches('[data-liquidglass-backdrop]') ? backdropMask : mask
-        layer.style.maskImage = image
-        ;(layer.style as CSSStyleDeclaration & { webkitMaskImage?: string }).webkitMaskImage = image
-        layer.style.maskSize = '100% 100%'
-        layer.style.maskRepeat = 'no-repeat'
-      })
-    if (moving || stableFrames === 8) {
-      const rim = container.querySelector<HTMLCanvasElement>('[data-liquidglass-rim]')
-      if (rim) drawUnionRim(rim, rect.width, rect.height, shapes, blend, options)
+    const backdrop = container.querySelector<HTMLElement>(':scope > [data-liquidglass-backdrop]')
+    const backdropMask = maskFor(rect.width, rect.height, shapes, blend, resolution, margin)
+    if (backdrop) {
+      backdrop.style.maskImage = backdropMask
+      ;(backdrop.style as CSSStyleDeclaration & { webkitMaskImage?: string }).webkitMaskImage = backdropMask
+      backdrop.style.maskSize = '100% 100%'
+      backdrop.style.maskRepeat = 'no-repeat'
+    }
+    if (controller.tier === 'material') {
+      const bezel = options.bezel === 'auto' || options.bezel === undefined
+        ? clamp(Math.min(rect.width, rect.height) * 0.3, 8, 48)
+        : clamp(options.bezel, 1, Math.min(rect.width, rect.height) / 2)
+      const edge = container.querySelector<HTMLElement>(':scope > [data-liquidglass-edge]')
+      const edgeMask = maskFor(rect.width, rect.height, shapes, blend, resolution, 0, bezel)
+      if (edge) {
+        edge.style.maskImage = edgeMask
+        ;(edge.style as CSSStyleDeclaration & { webkitMaskImage?: string }).webkitMaskImage = edgeMask
+        edge.style.maskSize = '100% 100%'
+        edge.style.maskRepeat = 'no-repeat'
+      }
+    }
+    const tint = container.querySelector<HTMLElement>(':scope > [data-liquidglass-tint]')
+    if (tint && (moving || stableFrames === 1)) tint.style.clipPath = clipPathFor(shapes)
+    if (moving || stableFrames === 1 || stableFrames === 8) {
+      const rim = container.querySelector<HTMLCanvasElement>(':scope > [data-liquidglass-rim]')
+      if (rim) {
+        const bezel = options.bezel === 'auto' || options.bezel === undefined
+          ? clamp(Math.min(rect.width, rect.height) * 0.3, 8, 48)
+          : clamp(options.bezel, 1, Math.min(rect.width, rect.height) / 2)
+        drawSpecularRim(
+          rim,
+          rect.width,
+          rect.height,
+          (x, y) => shapeDistance(x, y, shapes, blend),
+          bezel,
+          options.specular ?? 0.7,
+          options.lightAngle ?? -50,
+        )
+      }
     }
     if (usesDisplacementMap) {
       const map = unionDisplacementMap(rect.width, rect.height, shapes, blend, options, resolution)
@@ -260,7 +265,7 @@ export function createGlassGroup(container: HTMLElement, initial: GlassGroupOpti
     },
     set(next: Partial<GlassGroupOptions>) {
       options = { ...options, ...next }
-      controller.set(next)
+      controller.set({ ...next, shadow: false })
       invalidate()
     },
     refresh() {
@@ -280,6 +285,8 @@ export function createGlassGroup(container: HTMLElement, initial: GlassGroupOpti
       for (const item of items) delete item.dataset.liquidglassGroupItem
       items.clear()
       controller.destroy()
+      if (originalGroup === null) delete container.dataset.liquidglassGroup
+      else container.setAttribute('data-liquidglass-group', originalGroup)
     },
   }
 }

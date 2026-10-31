@@ -35,3 +35,7 @@ liquid-glass[data-liquidglass-group-item],
   backdrop-filter: none !important;
   box-shadow: none !important;
 }
+
+[data-liquidglass-group][data-liquidglass-enhanced] {
+  background: transparent;
+}
