@@ -1,0 +1,63 @@
+{
+  "name": "liquidglass",
+  "version": "0.1.0",
+  "description": "Cross-browser Apple Liquid Glass for the web",
+  "license": "MIT",
+  "type": "module",
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "require": "./dist/index.cjs"
+    },
+    "./element": {
+      "types": "./dist/element.d.ts",
+      "import": "./dist/element.js",
+      "require": "./dist/element.cjs"
+    },
+    "./react": {
+      "types": "./dist/react.d.ts",
+      "import": "./dist/react.js",
+      "require": "./dist/react.cjs"
+    },
+    "./css": "./dist/liquidglass.css",
+    "./dist/*": "./dist/*"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE",
+    "!site"
+  ],
+  "sideEffects": [
+    "./dist/element.js",
+    "./dist/element.cjs",
+    "./dist/react.js",
+    "./dist/react.cjs",
+    "**/*.css"
+  ],
+  "scripts": {
+    "build": "tsup",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc --noEmit"
+  },
+  "peerDependencies": {
+    "react": ">=18"
+  },
+  "peerDependenciesMeta": {
+    "react": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@types/react": "^19.0.0",
+    "playwright": "^1.50.0",
+    "tsup": "^8.3.0",
+    "typescript": "^5.7.0",
+    "vitest": "^2.1.0"
+  }
+}
