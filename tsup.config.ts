@@ -14,7 +14,7 @@ export default defineConfig([
     external: ['react', 'react-dom'],
   },
   {
-    entry: { 'liquidglass.global': 'src/global.ts' },
+    entry: { liquidglass: 'src/global.ts' },
     format: ['iife'],
     globalName: 'LiquidGlass',
     outDir: 'dist',

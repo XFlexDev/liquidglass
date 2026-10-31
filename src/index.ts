@@ -1,3 +1,6 @@
+import { createGlass as createGlassController, detectSupport as detectBrowserSupport } from './render'
+import { createGlassGroup as createGroupController, type GlassGroupController, type GlassGroupOptions } from './group'
+
 export interface GlassOptions {
   radius?: number | 'auto'
   bezel?: number | 'auto'
@@ -26,10 +29,12 @@ export interface GlassController {
   destroy(): void
 }
 
-export function createGlass(_element: HTMLElement, _options: GlassOptions = {}): GlassController {
-  throw new Error('liquidglass is not initialized')
-}
+export type { GlassGroupController, GlassGroupOptions }
+export type { SupportInfo } from './render'
 
-export function detectSupport(): { webgl: boolean; refract: boolean; element: boolean } {
-  return { webgl: false, refract: false, element: false }
-}
+export const createGlass = createGlassController
+export const createGlassGroup = createGroupController
+
+export const detectSupport = detectBrowserSupport
+
+export { DEFAULTS, clearMapCache, createDisplacementMap, getMapCacheSize, parseGlassOptions, profileDerivative, profileHeight, roundedRectSdf, stepSpring } from './math'

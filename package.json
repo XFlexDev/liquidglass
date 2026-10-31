@@ -33,14 +33,16 @@
     "!site"
   ],
   "sideEffects": [
+    "./src/element.ts",
     "./dist/element.js",
     "./dist/element.cjs",
     "./dist/react.js",
     "./dist/react.cjs",
+    "./dist/liquidglass.global.js",
     "**/*.css"
   ],
   "scripts": {
-    "build": "tsup",
+    "build": "tsup && node scripts/copy-css.mjs",
     "test": "vitest run",
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit"
@@ -55,6 +57,7 @@
   },
   "devDependencies": {
     "@types/react": "^19.0.0",
+    "jsdom": "^25.0.0",
     "playwright": "^1.50.0",
     "tsup": "^8.3.0",
     "typescript": "^5.7.0",
